@@ -54,7 +54,7 @@ import { join } from 'node:path'
 import { resolveSessionFilePath } from './session-file-resolver'
 import { resetHostReadableTranscriptPathCacheForTests } from './host-readable-transcript-path'
 import { WslTranscriptFsError } from './wsl-transcript-fs-error'
-import { listRunningWslHomeDirsAsync } from '../wsl'
+import { listRunningWslDistrosAsync, listRunningWslHomeDirsAsync } from '../wsl'
 
 const HOST_TRANSCRIPT = join(
   'C:\\Users\\ada',
@@ -79,6 +79,7 @@ beforeEach(() => {
   mocks.wslFiles.clear()
   mocks.existsSync.mockClear()
   mocks.wslGatedAccess.mockClear()
+  vi.mocked(listRunningWslDistrosAsync).mockClear()
   vi.mocked(listRunningWslHomeDirsAsync).mockClear()
   setPlatform('win32')
 })
@@ -102,7 +103,7 @@ describe('Antigravity id-based resolve on a Windows host with WSL', () => {
     await expect(resolveSessionFilePath('antigravity', CONVERSATION_ID)).resolves.toBe(
       HOST_TRANSCRIPT
     )
-    expect(listRunningWslHomeDirsAsync).not.toHaveBeenCalled()
+    expect(listRunningWslDistrosAsync).not.toHaveBeenCalled()
   })
 
   it('treats an explicit brain root as exact and skips the WSL fallback', async () => {
@@ -113,6 +114,29 @@ describe('Antigravity id-based resolve on a Windows host with WSL', () => {
         antigravityBrainDir: 'C:\\isolated\\brain'
       })
     ).resolves.toBeNull()
+    expect(listRunningWslDistrosAsync).not.toHaveBeenCalled()
+  })
+
+  it('probes running distros once per attempt, not once per candidate', async () => {
+    mocks.wslFiles.set(DEBIAN_TRANSCRIPT, true)
+
+    await expect(resolveSessionFilePath('antigravity', CONVERSATION_ID)).resolves.toBe(
+      DEBIAN_TRANSCRIPT
+    )
+    expect(listRunningWslDistrosAsync).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not start WSL discovery for a cancelled lookup', async () => {
+    const controller = new AbortController()
+    mocks.existsSync.mockImplementationOnce(() => {
+      controller.abort()
+      return false
+    })
+
+    await expect(
+      resolveSessionFilePath('antigravity', CONVERSATION_ID, {}, controller.signal)
+    ).rejects.toThrow()
+    expect(listRunningWslDistrosAsync).not.toHaveBeenCalled()
     expect(listRunningWslHomeDirsAsync).not.toHaveBeenCalled()
   })
 
@@ -136,7 +160,7 @@ describe('Antigravity id-based resolve on a Windows host with WSL', () => {
   it('rejects a path-shaped conversation id before touching any filesystem', async () => {
     await expect(resolveSessionFilePath('antigravity', '..\\..\\secrets')).resolves.toBeNull()
     expect(mocks.existsSync).not.toHaveBeenCalled()
-    expect(listRunningWslHomeDirsAsync).not.toHaveBeenCalled()
+    expect(listRunningWslDistrosAsync).not.toHaveBeenCalled()
   })
 
   it('does not replace an attested distro miss with an id match in another guest', async () => {
@@ -145,7 +169,7 @@ describe('Antigravity id-based resolve on a Windows host with WSL', () => {
     await expect(
       resolveSessionFilePath('antigravity', CONVERSATION_ID, { wslDistro: 'Ubuntu' })
     ).resolves.toBeNull()
-    expect(listRunningWslHomeDirsAsync).not.toHaveBeenCalled()
+    expect(listRunningWslDistrosAsync).not.toHaveBeenCalled()
   })
 
   it('does not replace a missing guest hook path with an id match', async () => {
@@ -168,6 +192,6 @@ describe('Antigravity id-based resolve on a Windows host with WSL', () => {
     mocks.wslFiles.set(UBUNTU_TRANSCRIPT, true)
 
     await expect(resolveSessionFilePath('antigravity', CONVERSATION_ID)).resolves.toBeNull()
-    expect(listRunningWslHomeDirsAsync).not.toHaveBeenCalled()
+    expect(listRunningWslDistrosAsync).not.toHaveBeenCalled()
   })
 })

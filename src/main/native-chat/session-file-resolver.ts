@@ -19,6 +19,7 @@ import {
   resolveGrokSessionsDir
 } from '../../shared/grok-session-paths'
 import {
+  createWslTranscriptResolutionSnapshot,
   needsWslHostResolution,
   toHostReadableTranscriptPath,
   wslAntigravityTranscriptPaths,
@@ -340,11 +341,18 @@ async function resolveAntigravitySessionFile(
   if (hostHit || brainDirOverride) {
     return hostHit
   }
-  // Why: enumerating WSL homes spawns wsl.exe, so only pay it after the host misses.
+  if (process.platform !== 'win32') {
+    return null
+  }
+  // Why: enumerating WSL homes spawns wsl.exe, so only pay it after the host misses,
+  // and once per attempt — Chat re-resolves every few seconds until the file appears.
+  signal?.throwIfAborted()
+  const wslSnapshot = await createWslTranscriptResolutionSnapshot()
+  signal?.throwIfAborted()
   let unavailable: WslTranscriptFsError | undefined
-  for (const candidate of await wslAntigravityTranscriptPaths(conversationId)) {
+  for (const candidate of await wslAntigravityTranscriptPaths(conversationId, { wslSnapshot })) {
     try {
-      const hit = await toHostReadableTranscriptPath(candidate, { signal })
+      const hit = await toHostReadableTranscriptPath(candidate, { signal, wslSnapshot })
       if (hit) {
         return hit
       }
