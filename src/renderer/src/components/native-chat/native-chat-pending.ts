@@ -130,9 +130,14 @@ function messageIsAfterPendingTimestamp(
   const boundary = nativeChatPendingMatchingAfter(pending)
   // A transcript-clock boundary describes an existing message, so exclude ties.
   // Local send time has no existing record and remains inclusive.
-  return pending.afterMessageTimestamp == null
-    ? message.timestamp >= boundary
-    : message.timestamp > boundary
+  if (pending.afterMessageTimestamp != null) {
+    return message.timestamp > boundary
+  }
+  // Why: some transcripts (e.g. Antigravity) stamp whole seconds, so this send's
+  // own row can read up to 999ms before the millisecond send time.
+  return message.timestamp % 1000 === 0
+    ? message.timestamp >= Math.floor(boundary / 1000) * 1000
+    : message.timestamp >= boundary
 }
 
 /**

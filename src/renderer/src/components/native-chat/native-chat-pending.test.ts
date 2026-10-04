@@ -499,6 +499,31 @@ describe('pendingSendsAsMessages', () => {
     expect(prunePendingSends(pending, remoteTranscript)).toEqual([])
   })
 
+  it('retires a first send whose whole-second transcript row precedes the send ms', () => {
+    const pending = [
+      { ...pendingOf('p1', 'echo hello'), sentAt: 1_790_000_000_300, afterMessageId: null }
+    ]
+    const transcript = [
+      { ...userMessage('u1', 'echo hello'), timestamp: 1_790_000_000_000 },
+      { ...assistantMessage('a1', 'hello'), timestamp: 1_790_000_001_000 }
+    ]
+
+    expect(pendingSendsAsMessages(pending, transcript)).toEqual([])
+    expect(prunePendingSends(pending, transcript)).toEqual([])
+  })
+
+  it('keeps a first send visible against a whole-second row from an earlier second', () => {
+    const pending = [
+      { ...pendingOf('p1', 'echo hello'), sentAt: 1_790_000_000_300, afterMessageId: null }
+    ]
+    const history = [
+      { ...userMessage('old-user', 'echo hello'), timestamp: 1_789_999_999_000 },
+      { ...assistantMessage('old-answer', 'hello'), timestamp: 1_789_999_999_000 }
+    ]
+
+    expect(prunePendingSends(pending, history)).toEqual(pending)
+  })
+
   it('hides a first send while its timestampless transcript turn is visible (grok)', () => {
     const pending = [{ ...pendingOf('p1', 'rename it'), afterMessageId: null }]
 
