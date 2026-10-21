@@ -20,6 +20,7 @@ import { createAccountRuntimeTargetSettingsSync } from './rate-limits/account-ru
 import { normalizeCodexRuntimeSelection } from './codex-accounts/runtime-selection'
 import { normalizeClaudeRuntimeSelection } from './claude-accounts/runtime-selection'
 import type { ClaudeStatusLineRateLimits } from '../shared/claude-statusline-rate-limits'
+import { resolveLocalAccountRuntimeTarget } from '../shared/local-account-runtime'
 
 export type ProviderAccountServices = {
   rateLimits: RateLimitService
@@ -136,6 +137,9 @@ export function createProviderAccountServices(
   // Reuse the meter switch so hidden Antigravity usage does not spawn agy.
   rateLimits.setAntigravityUsageEnabledResolver(() =>
     store.getUI().statusBarItems.includes('antigravity')
+  )
+  rateLimits.setAntigravityRuntimeTargetResolver(() =>
+    resolveLocalAccountRuntimeTarget(store.getSettings())
   )
   rateLimits.setNetworkProxySettingsResolver(() => store.getSettings())
   rateLimits.setInactiveClaudeAccountsResolver(() => {

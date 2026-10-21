@@ -1,4 +1,10 @@
 import { TUI_AGENT_CONFIG } from '../../shared/tui-agent-config'
+import { buildPosixCommandPathLookupScript } from '../../shared/posix-command-path-lookup'
+import { quotePosixShell } from '../../shared/shell-argument-quoting'
+import {
+  buildWslCapturedLoginShellCommand,
+  buildWslExecArgs
+} from '../../shared/wsl-login-shell-command'
 
 /**
  * The quota read is a slash command run in print mode.
@@ -60,4 +66,34 @@ export const ANTIGRAVITY_USAGE_MAX_OUTPUT_BYTES = 512 * 1024
 /** The command name Orca already uses to detect Antigravity, so both agree on the binary. */
 export function antigravityCommandName(): string {
   return TUI_AGENT_CONFIG.antigravity.detectCmd
+}
+
+export const WSL_ANTIGRAVITY_NOT_FOUND_MESSAGE =
+  'Antigravity CLI (agy) not found in the WSL login-shell PATH.'
+
+export function buildWslAntigravityCommand(
+  distro: string | null | undefined,
+  args: readonly string[]
+): { args: string[]; readStdout: (stdout: string) => string | null } {
+  const captured = buildWslCapturedLoginShellCommand(
+    [
+      buildPosixCommandPathLookupScript(
+        { kind: 'literal', value: antigravityCommandName() },
+        { skipWindowsMountDirs: true }
+      ),
+      'if [ -z "$resolved" ]; then',
+      `  printf '%s\\n' ${quotePosixShell(WSL_ANTIGRAVITY_NOT_FOUND_MESSAGE)}`,
+      '  exit 127',
+      'fi',
+      ...Object.entries(ANTIGRAVITY_PROBE_ENV).map(
+        ([name, value]) => `export ${name}=${quotePosixShell(value)}`
+      ),
+      // Fence CLI stderr too: agy can print its version or sign-in guidance there.
+      `"$resolved" ${args.map(quotePosixShell).join(' ')} 2>&1`
+    ].join('\n')
+  )
+  return {
+    args: buildWslExecArgs(distro ?? undefined, ['sh', '-c', captured.command]),
+    readStdout: captured.readStdout
+  }
 }

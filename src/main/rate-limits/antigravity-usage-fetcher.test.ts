@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   fetchAntigravityRateLimits,
-  resetAntigravityUsageSupportForTests
+  resetAntigravityUsageSupportForTests,
+  type FetchAntigravityRateLimitsOptions
 } from './antigravity-usage-fetcher'
 import { ANTIGRAVITY_USAGE_ARGS, ANTIGRAVITY_VERSION_ARGS } from './antigravity-usage-command'
 import type { ProcessResult } from '@orca/process-host/process-spec'
@@ -42,6 +43,8 @@ function harness(
     runCommand?: ReturnType<typeof vi.fn>
     program?: string | null
     env?: NodeJS.ProcessEnv
+    platform?: NodeJS.Platform
+    target?: FetchAntigravityRateLimitsOptions['target']
   } = {}
 ) {
   // Why the per-call split: the fetcher probes `--version` before the quota read, and a fixture
@@ -63,17 +66,21 @@ function harness(
   const resolveEnvironment = vi
     .fn()
     .mockResolvedValue(options.env ?? { PATH: '/Users/x/.local/bin:/usr/bin' })
+  const isWslDistroRunning = vi.fn().mockResolvedValue(false)
   return {
     runCommand,
     resolveCommand,
     resolveEnvironment,
+    isWslDistroRunning,
     fetch: () =>
       fetchAntigravityRateLimits({
         // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the mock returns a ProcessResult, which is the whole contract runProcess exposes to this fetcher.
         runCommand: runCommand as never,
         resolveCommand,
         resolveEnvironment,
-        platform: 'darwin',
+        isWslDistroRunning,
+        platform: options.platform ?? 'darwin',
+        target: options.target,
         now: () => 1_700_000_000_000
       })
   }
@@ -146,6 +153,43 @@ describe('fetchAntigravityRateLimits', () => {
     expect(result.error).toContain('was not found on this machine')
     expect(h.runCommand).not.toHaveBeenCalled()
   })
+
+  it.each(['win32', 'darwin', 'linux'] as const)(
+    'keeps native CLI resolution on %s for a host account',
+    async (platform) => {
+      const program = platform === 'win32' ? 'C:\\Tools\\agy.cmd' : '/opt/bin/agy'
+      const h = harness({
+        platform,
+        program,
+        target: { runtime: 'host', wslDistro: null },
+        result: processResult({ stdout: USAGE_ENVELOPE })
+      })
+
+      expect((await h.fetch()).status).toBe('ok')
+      expect(h.resolveCommand).toHaveBeenCalledWith('agy', expect.objectContaining({ platform }))
+      expect(h.runCommand).toHaveBeenLastCalledWith(
+        expect.objectContaining({ program, args: ANTIGRAVITY_USAGE_ARGS })
+      )
+      expect(h.isWslDistroRunning).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['darwin', 'linux'] as const)(
+    'ignores a persisted WSL target on %s',
+    async (platform) => {
+      const h = harness({
+        platform,
+        target: { runtime: 'wsl', wslDistro: 'Ubuntu-26.04' },
+        result: processResult({ stdout: USAGE_ENVELOPE })
+      })
+
+      expect((await h.fetch()).status).toBe('ok')
+      expect(h.runCommand).toHaveBeenLastCalledWith(
+        expect.objectContaining({ args: ANTIGRAVITY_USAGE_ARGS })
+      )
+      expect(h.isWslDistroRunning).not.toHaveBeenCalled()
+    }
+  )
 
   it('reports a signed-out account as unavailable, not as a failed refresh', async () => {
     const result = await harness({

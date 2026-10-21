@@ -1,7 +1,10 @@
 import { runProcess } from '@orca/process-host'
 import { hasReachedAppVersion, parseCliVersion } from '../../shared/app-version'
+import type { LocalAccountRuntimeTarget } from '../../shared/local-account-runtime'
 import { resolveCommandOnLocalPath } from '../ipc/command-path-resolver'
 import { resolveLoginShellEnvironment } from '../startup/login-shell-environment'
+import { isWslDistroRunningForBackgroundWork } from '../wsl-background-distro-gate'
+import { wslExeProcessSpec } from '../wsl-exe-process'
 import type { ProviderRateLimits, UsageRateLimitFailureKind } from '../../shared/rate-limit-types'
 import {
   ANTIGRAVITY_MIN_USAGE_VERSION,
@@ -11,7 +14,9 @@ import {
   ANTIGRAVITY_USAGE_TIMEOUT_MS,
   ANTIGRAVITY_VERSION_ARGS,
   ANTIGRAVITY_VERSION_TIMEOUT_MS,
-  antigravityCommandName
+  antigravityCommandName,
+  buildWslAntigravityCommand,
+  WSL_ANTIGRAVITY_NOT_FOUND_MESSAGE
 } from './antigravity-usage-command'
 import { parseAntigravityUsageStdout, stdoutShowsModelTurn } from './antigravity-usage-response'
 
@@ -48,12 +53,14 @@ export type AntigravityUsageDependencies = {
   runCommand?: typeof runProcess
   resolveCommand?: typeof resolveCommandOnLocalPath
   resolveEnvironment?: () => Promise<NodeJS.ProcessEnv>
+  isWslDistroRunning?: typeof isWslDistroRunningForBackgroundWork
   platform?: NodeJS.Platform
   now?: () => number
 }
 
 export type FetchAntigravityRateLimitsOptions = AntigravityUsageDependencies & {
   signal?: AbortSignal
+  target?: LocalAccountRuntimeTarget
 }
 
 function unavailable(
@@ -119,12 +126,25 @@ export async function fetchAntigravityRateLimits(
   const resolve = options.resolveCommand ?? resolveCommandOnLocalPath
   const platform = options.platform ?? process.platform
   const resolveEnvironment = options.resolveEnvironment ?? (() => resolveLoginShellEnvironment())
+  const useWsl = platform === 'win32' && options.target?.runtime === 'wsl'
+  if (
+    useWsl &&
+    !(await (options.isWslDistroRunning ?? isWslDistroRunningForBackgroundWork)(
+      options.target?.wslDistro
+    ))
+  ) {
+    return unavailable(
+      'Antigravity usage is not available while the account’s WSL distribution is stopped or unavailable.',
+      'usage-unavailable',
+      now()
+    )
+  }
 
   // Why the login shell's env: agy installs to ~/.local/bin, which is on the user's PATH but not on
   // the PATH an Electron app inherits from the window server or a desktop launcher.
   const env = { ...(await resolveEnvironment()), ...ANTIGRAVITY_PROBE_ENV }
   const command = antigravityCommandName()
-  const program = await resolve(command, { platform, env })
+  const program = useWsl ? 'wsl.exe' : await resolve(command, { platform, env })
   if (!program) {
     return unavailable(
       `Antigravity usage is not available. The Antigravity CLI (\`${command}\`) was not found on this machine.`,
@@ -133,23 +153,35 @@ export async function fetchAntigravityRateLimits(
     )
   }
 
-  // Recheck each read: the CLI can be replaced while Orca runs; unsupported reads spend quota.
-  let versionRun: Awaited<ReturnType<typeof runProcess>>
-  try {
-    versionRun = await run({
-      program,
-      args: ANTIGRAVITY_VERSION_ARGS,
-      env,
-      timeoutMs: ANTIGRAVITY_VERSION_TIMEOUT_MS,
+  const runProbe = async (args: readonly string[], timeoutMs: number) => {
+    const wslCommand = useWsl ? buildWslAntigravityCommand(options.target?.wslDistro, args) : null
+    const result = await run({
+      ...(wslCommand
+        ? wslExeProcessSpec(wslCommand.args, timeoutMs, { ...env, WSL_UTF8: '1' })
+        : { program, args, env, timeoutMs }),
       maxOutputBytes: ANTIGRAVITY_USAGE_MAX_OUTPUT_BYTES,
       signal: options.signal
     })
+    return wslCommand ? { ...result, stdout: wslCommand.readStdout(result.stdout) ?? '' } : result
+  }
+
+  // Recheck each read: the CLI can be replaced while Orca runs; unsupported reads spend quota.
+  let versionRun: Awaited<ReturnType<typeof runProcess>>
+  try {
+    versionRun = await runProbe(ANTIGRAVITY_VERSION_ARGS, ANTIGRAVITY_VERSION_TIMEOUT_MS)
   } catch (error) {
     return failed(spawnFailureMessage(error), 'cli-unavailable', now())
   }
+  if (
+    useWsl &&
+    versionRun.code === 127 &&
+    versionRun.stdout.includes(WSL_ANTIGRAVITY_NOT_FOUND_MESSAGE)
+  ) {
+    return unavailable(WSL_ANTIGRAVITY_NOT_FOUND_MESSAGE, 'cli-unavailable', now())
+  }
   const version =
     versionRun.code === 0 && !versionRun.timedOut && versionRun.signal === null
-      ? parseCliVersion(versionRun.stdout.trim() ? versionRun.stdout : versionRun.stderr)
+      ? parseCliVersion(useWsl || versionRun.stdout.trim() ? versionRun.stdout : versionRun.stderr)
       : null
   if (!version || !hasReachedAppVersion(version, ANTIGRAVITY_MIN_USAGE_VERSION)) {
     return unavailable(
@@ -163,14 +195,7 @@ export async function fetchAntigravityRateLimits(
 
   let result: Awaited<ReturnType<typeof runProcess>>
   try {
-    result = await run({
-      program,
-      args: ANTIGRAVITY_USAGE_ARGS,
-      env,
-      timeoutMs: ANTIGRAVITY_USAGE_TIMEOUT_MS,
-      maxOutputBytes: ANTIGRAVITY_USAGE_MAX_OUTPUT_BYTES,
-      signal: options.signal
-    })
+    result = await runProbe(ANTIGRAVITY_USAGE_ARGS, ANTIGRAVITY_USAGE_TIMEOUT_MS)
   } catch (error) {
     return failed(spawnFailureMessage(error), 'cli-unavailable', now())
   }

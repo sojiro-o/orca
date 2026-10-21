@@ -4,6 +4,8 @@ import { fetchClaudeRateLimits } from './claude-fetcher'
 import { fetchCodexRateLimits } from './codex-fetcher'
 import { fetchGeminiRateLimits } from './gemini-usage-fetcher'
 import { fetchAntigravityRateLimits } from './antigravity-usage-fetcher'
+import { getDefaultSettings } from '../../shared/constants'
+import { resolveLocalAccountRuntimeTarget } from '../../shared/local-account-runtime'
 import {
   errorProvider,
   okProvider,
@@ -83,6 +85,31 @@ describe('RateLimitService Antigravity usage', () => {
     // Why both: the mirror made these two numbers the same value by construction.
     expect(state.antigravity?.session?.usedPercent).toBe(30)
     expect(state.gemini?.session?.usedPercent).toBe(42)
+  })
+
+  it('follows the local account runtime on each fetch independently of Codex selection', async () => {
+    const settings = getDefaultSettings('/tmp')
+    settings.localAccountRuntime = 'auto'
+    settings.localWindowsRuntimeDefault = { kind: 'wsl', distro: 'Ubuntu-26.04' }
+    const service = new RateLimitService()
+    service.setCodexFetchTarget({ runtime: 'host' })
+    service.setAntigravityRuntimeTargetResolver(() =>
+      resolveLocalAccountRuntimeTarget(settings, 'win32')
+    )
+
+    await service.refresh()
+
+    expect(fetchAntigravityRateLimits).toHaveBeenLastCalledWith(
+      expect.objectContaining({ target: { runtime: 'wsl', wslDistro: 'Ubuntu-26.04' } })
+    )
+    expect(service.getState().codexTarget).toEqual({ runtime: 'host', wslDistro: null })
+
+    settings.localAccountRuntime = 'host'
+    await service.refresh()
+
+    expect(fetchAntigravityRateLimits).toHaveBeenLastCalledWith(
+      expect.objectContaining({ target: { runtime: 'host', wslDistro: null } })
+    )
   })
 
   it('keeps an Antigravity reading through a Gemini failure', async () => {

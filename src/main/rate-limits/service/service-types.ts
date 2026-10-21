@@ -5,6 +5,7 @@ import type { ClaudeAccountSelectionTarget } from '../../claude-accounts/runtime
 import type { KimiHomeResolution } from '../../kimi/kimi-runtime-home'
 import type { CodexAccountSelectionTarget } from '../../codex-accounts/runtime-selection'
 import type { CodexRateLimitHomeResolution } from '../../codex-accounts/runtime-home-service'
+import type { LocalAccountRuntimeTarget } from '../../../shared/local-account-runtime'
 
 export type {
   CodexRateLimitResetResult,
@@ -83,6 +84,7 @@ export type GeminiCliOAuthEnabledResolver = () => boolean
 
 /** Whether the user is actually showing Antigravity usage, so the `agy` probe is worth spawning. */
 export type AntigravityUsageEnabledResolver = () => boolean
+export type AntigravityRuntimeTargetResolver = () => LocalAccountRuntimeTarget
 export type ActiveRateLimitProvider = ProviderRateLimits['provider']
 export type ActiveProviderState = {
   provider: ActiveRateLimitProvider
