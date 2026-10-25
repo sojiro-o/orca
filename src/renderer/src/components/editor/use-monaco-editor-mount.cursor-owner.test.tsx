@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
-import { cleanup, renderHook } from '@testing-library/react'
-import { Suspense } from 'react'
+import { act, cleanup, renderHook } from '@testing-library/react'
+import { Suspense, useState } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
-import type { editor } from 'monaco-editor'
+import type { editor, IRange } from 'monaco-editor'
 import type { OnMount } from '@monaco-editor/react'
 import type { StoreApi } from 'zustand'
 import type { AppState } from '@/store'
@@ -10,6 +10,7 @@ import { createEditorTabsStore } from '@/store/slices/editor-slice-test-harness'
 import { captureEditorFileOperationProvenance } from '@/lib/editor-file-operation-owner'
 import type { MonacoEditorMountParams } from './monaco-editor-mount-params'
 import { useMonacoEditorMount } from './use-monaco-editor-mount'
+import { getRemoteUrlLineRange } from './selection-copy'
 
 const storeRef = vi.hoisted((): { current?: StoreApi<AppState> } => ({}))
 vi.mock('@/store', () => ({
@@ -81,10 +82,82 @@ function mountParams(
     gutterMenu: {
       setGutterMenuOpen: vi.fn(),
       setGutterMenuPoint: vi.fn(),
-      setGutterMenuLine: vi.fn()
+      setGutterMenuLine: vi.fn(),
+      setGutterMenuSelection: vi.fn()
     }
   }
 }
+
+it('retains the remote URL range before the gutter context menu collapses the selection', () => {
+  const store = createEditorTabsStore()
+  storeRef.current = store
+  const params = mountParams(store, 'selected-file', '/repo/file.ts')
+  let selection: IRange = {
+    startLineNumber: 10,
+    startColumn: 1,
+    endLineNumber: 21,
+    endColumn: 1
+  }
+  const mouseEvent = {
+    event: {
+      rightButton: true,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+      posx: 5,
+      posy: 8
+    },
+    target: { type: 3, position: { lineNumber: 15 } }
+  }
+  let emitMouseDown: ((event: typeof mouseEvent) => void) | undefined
+  const mockEditor = {
+    getModel: () => null,
+    getPosition: () => ({ lineNumber: 10, column: 1 }),
+    getSelection: () => selection,
+    setPosition: ({ lineNumber, column }: { lineNumber: number; column: number }) => {
+      selection = {
+        startLineNumber: lineNumber,
+        startColumn: column,
+        endLineNumber: lineNumber,
+        endColumn: column
+      }
+    },
+    focus: vi.fn(),
+    onDidChangeCursorPosition: () => ({ dispose: vi.fn() }),
+    onDidScrollChange: () => ({ dispose: vi.fn() }),
+    onMouseDown: (listener: NonNullable<typeof emitMouseDown>) => {
+      emitMouseDown = listener
+      return { dispose: vi.fn() }
+    },
+    onDidDispose: vi.fn()
+  }
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Mount uses only the editor methods mocked above; decorations/input/probe integrations are mocked.
+  const editorInstance = mockEditor as unknown as editor.IStandaloneCodeEditor
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The gutter listener uses only this Monaco target enum; other Monaco integrations are mocked.
+  const monaco = {
+    editor: { MouseTargetType: { GUTTER_LINE_NUMBERS: 3 } }
+  } as Parameters<OnMount>[1]
+  const view = renderHook(() => {
+    const [menuSelection, setGutterMenuSelection] = useState<IRange | null>(null)
+    const [menuLine, setGutterMenuLine] = useState(1)
+    const onMount = useMonacoEditorMount({
+      ...params,
+      gutterMenu: { ...params.gutterMenu, setGutterMenuSelection, setGutterMenuLine }
+    })
+    return { onMount, remoteLineRange: getRemoteUrlLineRange(menuLine, menuSelection) }
+  })
+  view.result.current.onMount(editorInstance, monaco)
+
+  act(() => emitMouseDown?.(mouseEvent))
+
+  expect(mockEditor.getSelection()).toEqual({
+    startLineNumber: 15,
+    startColumn: 1,
+    endLineNumber: 15,
+    endColumn: 1
+  })
+  expect(view.result.current.remoteLineRange).toEqual({ line: 10, endLine: 20 })
+  params.unregisterFileSearchSelectionRef.current?.()
+})
 
 it('keeps a retained cursor listener on the current file ID after same-path owner migration', () => {
   const store = createEditorTabsStore()

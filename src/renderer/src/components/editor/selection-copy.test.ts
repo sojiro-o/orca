@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   canCopySelectionWithContext,
   formatCopiedSelectionWithContext,
-  getContextualCopyLineRange
+  getContextualCopyLineRange,
+  getRemoteUrlLineRange
 } from './selection-copy'
 
 describe('contextual copy eligibility', () => {
@@ -26,6 +27,41 @@ describe('contextual copy eligibility', () => {
         }
       }
     }
+  })
+})
+
+describe('getRemoteUrlLineRange', () => {
+  const selection = {
+    startLineNumber: 10,
+    startColumn: 4,
+    endLineNumber: 20,
+    endColumn: 9
+  }
+
+  it('includes the selected lines only when they cover the clicked gutter line', () => {
+    for (const line of [10, 15, 20]) {
+      expect(getRemoteUrlLineRange(line, selection)).toEqual({ line: 10, endLine: 20 })
+    }
+    for (const line of [9, 21]) {
+      expect(getRemoteUrlLineRange(line, selection)).toEqual({ line })
+    }
+  })
+
+  it('excludes the ending column-1 line from both the range and its coverage', () => {
+    const fullLineSelection = { ...selection, endLineNumber: 21, endColumn: 1 }
+    expect(getRemoteUrlLineRange(20, fullLineSelection)).toEqual({ line: 10, endLine: 20 })
+    expect(getRemoteUrlLineRange(21, fullLineSelection)).toEqual({ line: 21 })
+  })
+
+  it('keeps a single line for empty, partial-line and full-line selections', () => {
+    expect(getRemoteUrlLineRange(10, null)).toEqual({ line: 10 })
+    expect(getRemoteUrlLineRange(10, { ...selection, endLineNumber: 10 })).toEqual({ line: 10 })
+    expect(getRemoteUrlLineRange(10, { ...selection, endLineNumber: 10, endColumn: 4 })).toEqual({
+      line: 10
+    })
+    expect(getRemoteUrlLineRange(10, { ...selection, endLineNumber: 11, endColumn: 1 })).toEqual({
+      line: 10
+    })
   })
 })
 

@@ -123,6 +123,7 @@ export type GitInspectionApi = {
     worktreePath: string
     relativePath: string
     line: number
+    endLine?: number
     connectionId?: string
   }) => Promise<string | null>
   remoteCommitUrl: (args: {

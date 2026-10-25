@@ -344,6 +344,14 @@ describe('git RPC methods', () => {
         line: 3
       })
     )
+    const rangeResponse = await dispatcher.dispatch(
+      makeRequest('git.remoteFileUrl', {
+        worktree: 'id:wt-1',
+        relativePath: 'src/a.ts',
+        line: 3,
+        endLine: 8
+      })
+    )
     const commitUrlResponse = await dispatcher.dispatch(
       makeRequest('git.remoteCommitUrl', {
         worktree: 'id:wt-1',
@@ -366,6 +374,21 @@ describe('git RPC methods', () => {
       undefined
     )
     expect(response).toMatchObject({ ok: true, result: 'https://example.com/file#L3' })
+    expect(runtime.getRuntimeGitRemoteFileUrl).toHaveBeenNthCalledWith(
+      1,
+      'id:wt-1',
+      'src/a.ts',
+      3,
+      undefined
+    )
+    expect(runtime.getRuntimeGitRemoteFileUrl).toHaveBeenNthCalledWith(
+      2,
+      'id:wt-1',
+      'src/a.ts',
+      3,
+      8
+    )
+    expect(rangeResponse.ok).toBe(true)
     expect(runtime.getRuntimeGitRemoteCommitUrl).toHaveBeenCalledWith('id:wt-1', commitOid)
     expect(commitUrlResponse).toMatchObject({ ok: true, result: 'https://example.com/commit/abc' })
   })
