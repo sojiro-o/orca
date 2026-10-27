@@ -16,7 +16,7 @@ import {
 } from '../../e2ee-crypto'
 import { RemoteRuntimeRequestConnection } from './remote-runtime-request-connection'
 import { remoteRuntimeClientCapabilities } from '../remote-runtime-client-capabilities'
-import { ChildProcess } from 'node:child_process'
+import { createFakeSpawnedChild } from '../../__fixtures__/fake-spawned-child'
 import * as commandResolution from '../../../main/git/command-runner/git-command-resolution'
 import * as gitRunner from '../../../main/git/runner'
 import {
@@ -82,7 +82,7 @@ describe('RemoteRuntimeRequestConnection', () => {
           : null
       })
     execFileMock.mockImplementation((_command, _args, _options, callback) => {
-      const child = new ChildProcess()
+      const child = createFakeSpawnedChild()
       queueMicrotask(() => {
         const stdout = metadata.shift() ?? ''
         if (!metadata.length && wait === 'admission') {
