@@ -121,7 +121,7 @@ describe('RemoteRuntimeRequestConnection', () => {
     expect(Date.now() - start).toBeGreaterThanOrEqual(5_000)
     // ast-grep-ignore: test-no-wall-clock -- The fallback must arrive before the real RPC deadline.
     expect(Date.now() - start).toBeLessThan(15_000)
-    expect(optional?.[1].signal.aborted).toBe(true)
+    expect(optional?.[1].signal?.aborted).toBe(true)
     ;(await holding)?.release()
     releasePreflight()
     await expect(exec.mock.results.at(-1)?.value).rejects.toMatchObject({ name: 'AbortError' })
