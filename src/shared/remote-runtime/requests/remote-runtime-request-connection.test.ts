@@ -16,6 +16,8 @@ import {
 } from '../../e2ee-crypto'
 import { RemoteRuntimeRequestConnection } from './remote-runtime-request-connection'
 import { remoteRuntimeClientCapabilities } from '../../remote-runtime-client-capabilities'
+import * as gitRunner from '../../../main/git/runner'
+import { getRemoteFileUrl } from '../../../main/git/repo'
 
 type TestServer = {
   wss: WebSocketServer
@@ -73,6 +75,44 @@ describe('RemoteRuntimeRequestConnection', () => {
     connection.close()
   })
 
+  it('returns the prepared URL over RPC before 15s when optional Git admission spends the 5s budget', async () => {
+    const metadata = [
+      'origin\thttps://github.com/org/repo.git (fetch)',
+      'remote.origin.fetch\n+refs/heads/*:refs/remotes/origin/*\0',
+      'a'.repeat(40),
+      'refs/heads/local',
+      'refs/heads/local\0\0origin\0refs/heads/review/topic\0refs/remotes/origin/topic\nrefs/remotes/origin/topic\0\0\0\0'
+    ]
+    const routing = { wslDistro: 'Ubuntu', admissionTier: 'interactive' } as const
+    const exec = vi
+      .spyOn(gitRunner, 'gitExecFileAsync')
+      .mockImplementation(async (_args, options) => {
+        expect(options).toMatchObject(routing)
+        expect(options?.timeout).toBeLessThanOrEqual(5_000)
+        if (metadata.length) {
+          return { stdout: metadata.shift() ?? '', stderr: '' }
+        }
+        // Admission/preflight can wait without settling; the action deadline must still end the await.
+        return new Promise(() => {})
+      })
+    const server = await createServer(() => getRemoteFileUrl('/repo', 'a.ts', 10, 20, routing))
+    const connection = new RemoteRuntimeRequestConnection(server.pairing)
+    const start = Date.now()
+    try {
+      await expect(connection.request('git.remoteFileUrl', {}, 15_000)).resolves.toMatchObject({
+        ok: true,
+        result: 'https://github.com/org/repo/blob/review%2Ftopic/a.ts#L10-L20'
+      })
+      expect(Date.now() - start).toBeGreaterThanOrEqual(5_000)
+      expect(Date.now() - start).toBeLessThan(15_000)
+      expect(exec.mock.calls).toHaveLength(6)
+      expect(exec.mock.calls.at(-1)?.[1]?.signal?.aborted).toBe(true)
+    } finally {
+      connection.close()
+      exec.mockRestore()
+    }
+  })
+
   it('aborts one request without closing the cached connection', async () => {
     const server = await createServer()
     const connection = new RemoteRuntimeRequestConnection(server.pairing)
@@ -97,7 +137,7 @@ describe('RemoteRuntimeRequestConnection', () => {
   })
 })
 
-async function createServer(): Promise<TestServer> {
+async function createServer(reply?: () => Promise<unknown>): Promise<TestServer> {
   const serverKeyPair = generateKeyPair()
   const requests: unknown[] = []
   const auths: unknown[] = []
@@ -111,7 +151,7 @@ async function createServer(): Promise<TestServer> {
     let sharedKey: Uint8Array | null = null
     let authenticated = false
 
-    ws.on('message', (data, isBinary) => {
+    ws.on('message', async (data, isBinary) => {
       if (isBinary) {
         return
       }
@@ -153,7 +193,7 @@ async function createServer(): Promise<TestServer> {
       sendEncrypted(ws, sharedKey, {
         id: request.id,
         ok: true,
-        result: { method: request.method },
+        result: reply ? await reply() : { method: request.method },
         _meta: { runtimeId: 'runtime-test' }
       })
     })

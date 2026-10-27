@@ -1,6 +1,8 @@
 import path from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as gitRunner from '../../git/command-runner/git-exec-file'
+import * as gitRepo from '../../git/repo'
+import * as localOptions from '../local-worktree-runtime-options'
 import {
   handlers,
   store,
@@ -58,6 +60,7 @@ import { invalidateAuthorizedRootsCache } from '../registered-worktree-roots-cac
 import { SSH_HOST_NOT_SERVED_MESSAGE } from '../../providers/ssh-host-not-served-error'
 
 describe('registerFilesystemHandlers', () => {
+  afterEach(() => vi.restoreAllMocks())
   beforeEach(() => {
     resetFilesystemIpcMocks()
     // Drop cached roots between fixtures.
@@ -107,6 +110,27 @@ describe('registerFilesystemHandlers', () => {
         connectionId: 'conn-1'
       })
     ).rejects.toThrow('sha must be a full git object id')
+  })
+
+  it('keeps the registered local owner, WSL and range at the URL IPC boundary', async () => {
+    vi.spyOn(localOptions, 'getLocalGitOptionsForRegisteredWorktree').mockReturnValue({
+      wslDistro: 'Ubuntu'
+    })
+    const url = vi.spyOn(gitRepo, 'getRemoteFileUrl').mockResolvedValue(null)
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The existing harness supplies this registrar's store API.
+    registerFilesystemHandlers(store as never)
+    const args = {
+      worktreePath: WORKTREE_FEATURE_PATH,
+      relativePath: 'a.ts',
+      line: 10,
+      endLine: 20
+    }
+    await expect(handlers.get('git:remoteFileUrl')!(null, args)).resolves.toBeNull()
+    expect(url).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, 'a.ts', 10, 20, { wslDistro: 'Ubuntu' })
+    await expect(
+      handlers.get('git:remoteFileUrl')!(null, { ...args, connectionId: 'conn-1' })
+    ).rejects.toThrow('Remote connection dropped')
+    expect(url).toHaveBeenCalledTimes(1)
   })
 
   it('rejects git:commit with whitespace-only message and does not call commitChanges', async () => {

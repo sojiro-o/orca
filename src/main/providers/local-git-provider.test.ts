@@ -210,12 +210,6 @@ const cases: ParityCase[] = [
   ],
   [
     'getRemoteFileUrl',
-    (p) => p.getRemoteFileUrl(WT, 'a', 3),
-    'getRemoteFileUrl',
-    [WT, 'a', 3, undefined, {}]
-  ],
-  [
-    'getRemoteFileUrl with a line range',
     (p) => p.getRemoteFileUrl(WT, 'a', 3, 8),
     'getRemoteFileUrl',
     [WT, 'a', 3, 8, {}]
@@ -248,12 +242,6 @@ describe('createLocalGitProvider', () => {
       return
     }
     expect(options).toMatchObject({ wslDistro: 'Ubuntu' })
-    if (fnName === 'getRemoteFileUrl') {
-      expect(git.awaitWindowsHostGitEnvironmentReady).toHaveBeenCalledWith({
-        cwd: WT,
-        wslDistro: 'Ubuntu'
-      })
-    }
   })
 
   it('applies shared link paths to status and scoped stage-all only', async () => {

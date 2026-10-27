@@ -19,9 +19,9 @@ function matchRefPattern(pattern: string, ref: string): string | null {
     : null
 }
 
-function sourceRefForTarget(refspecs: string[], target: string): string | undefined {
+export function sourceRefsForTarget(refspecs: readonly string[], target: string): string[] {
   if (target.includes('*')) {
-    return undefined
+    return []
   }
   const sources = new Set<string>()
   for (const refspec of refspecs) {
@@ -43,16 +43,23 @@ function sourceRefForTarget(refspecs: string[], target: string): string | undefi
       }
     }
   }
-  const source = [...sources][0]
-  if (sources.size !== 1 || !source) {
-    return undefined
-  }
   // Explicit refspecs bypass negative fetch mappings, so preserve their exclusions here.
-  return refspecs.some(
-    (refspec) => refspec.startsWith('^') && matchRefPattern(refspec.slice(1), source) !== null
+  return [...sources].filter(
+    (source) =>
+      !refspecs.some(
+        (refspec) => refspec.startsWith('^') && matchRefPattern(refspec.slice(1), source) !== null
+      )
   )
-    ? undefined
-    : source
+}
+
+function sourceRefForTarget(refspecs: string[], target: string): string | undefined {
+  const sources = sourceRefsForTarget(
+    refspecs.filter((spec) => !spec.startsWith('^')),
+    target
+  )
+  return sources.length === 1 && sourceRefsForTarget(refspecs, target).includes(sources[0])
+    ? sources[0]
+    : undefined
 }
 
 export async function refreshBranchCleanupTargetRefs(

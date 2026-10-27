@@ -1,6 +1,7 @@
 import { basename } from 'node:path'
 import { parseGitRevListAheadBehindCounts } from '../../shared/git-rev-list-output'
 import { buildHostedRemoteCommitUrl, buildHostedRemoteFileUrl } from './hosted-remote-url'
+import { getRemoteFileTarget } from './repo-remote-file-target'
 import {
   DEFAULT_BASE_REF_PROBE_TIMEOUT_MS,
   getDefaultBaseRefAsync,
@@ -43,15 +44,9 @@ export function getRepoName(path: string): string {
   return name.endsWith('.git') ? name.slice(0, -4) : name
 }
 
-export async function getRemoteUrl(
-  path: string,
-  options: LocalGitExecOptions = {}
-): Promise<string | null> {
+export async function getRemoteUrl(path: string): Promise<string | null> {
   try {
-    const { stdout } = await gitExecFileAsync(
-      ['remote', 'get-url', 'origin'],
-      gitExecOptions(path, options)
-    )
+    const { stdout } = await gitExecFileAsync(['remote', 'get-url', 'origin'], { cwd: path })
     return stdout.trim()
   } catch {
     return null
@@ -181,57 +176,6 @@ export async function getDefaultRemote(
   }
 }
 
-async function getRemoteFileRef(
-  repoPath: string,
-  options: LocalGitExecOptions
-): Promise<string | null> {
-  const execOptions = {
-    ...gitExecOptions(repoPath, options),
-    timeout: DEFAULT_BASE_REF_PROBE_TIMEOUT_MS,
-    maxBuffer: 64 * 1024
-  }
-  try {
-    const { stdout: head } = await gitExecFileAsync(
-      ['rev-parse', '--verify', 'HEAD^{commit}'],
-      execOptions
-    )
-    const sha = head.trim()
-    const { stdout: containingRef } = await gitExecFileAsync(
-      [
-        'for-each-ref',
-        `--contains=${sha}`,
-        '--count=1',
-        '--format=%(refname)',
-        'refs/remotes/origin/'
-      ],
-      execOptions
-    )
-    if (containingRef.trim()) {
-      return sha
-    }
-  } catch {}
-
-  try {
-    const { stdout: headRef } = await gitExecFileAsync(
-      ['symbolic-ref', '--quiet', 'HEAD'],
-      execOptions
-    )
-    const branchRef = headRef.trim()
-    const { stdout: upstream } = await gitExecFileAsync(
-      ['for-each-ref', '--count=1', '--format=%(upstream)', branchRef],
-      execOptions
-    )
-    // Why: a local branch can track a differently named remote branch.
-    const upstreamBranch = upstream.trim().match(/^refs\/remotes\/origin\/(.+)$/)?.[1]
-    if (upstreamBranch) {
-      return upstreamBranch
-    }
-  } catch {}
-
-  const defaultBaseRef = await getDefaultBaseRefAsync(repoPath, options)
-  return defaultBaseRef?.replace(/^origin\//, '') ?? null
-}
-
 export async function getRemoteFileUrl(
   repoPath: string,
   relativePath: string,
@@ -239,15 +183,10 @@ export async function getRemoteFileUrl(
   endLine?: number,
   options: LocalGitExecOptions = {}
 ): Promise<string | null> {
-  const remoteUrl = await getRemoteUrl(repoPath, options)
-  if (!remoteUrl) {
-    return null
-  }
-  const ref = await getRemoteFileRef(repoPath, options)
-  if (!ref) {
-    return null
-  }
-  return buildHostedRemoteFileUrl(remoteUrl, relativePath, ref, line, endLine)
+  const target = await getRemoteFileTarget(repoPath, options)
+  return target
+    ? buildHostedRemoteFileUrl(target.remoteUrl, relativePath, target.ref, line, endLine)
+    : null
 }
 
 export async function getRemoteCommitUrl(repoPath: string, sha: string): Promise<string | null> {

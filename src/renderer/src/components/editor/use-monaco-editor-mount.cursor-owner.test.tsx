@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { act, cleanup, renderHook } from '@testing-library/react'
-import { Suspense, useState } from 'react'
+import { cleanup, renderHook } from '@testing-library/react'
+import { Suspense } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { editor, IRange } from 'monaco-editor'
 import type { OnMount } from '@monaco-editor/react'
@@ -10,7 +10,9 @@ import { createEditorTabsStore } from '@/store/slices/editor-slice-test-harness'
 import { captureEditorFileOperationProvenance } from '@/lib/editor-file-operation-owner'
 import type { MonacoEditorMountParams } from './monaco-editor-mount-params'
 import { useMonacoEditorMount } from './use-monaco-editor-mount'
-import { getRemoteUrlLineRange } from './selection-copy'
+import { MonacoGutterContextMenu } from './MonacoGutterContextMenu'
+import { callRuntimeRpc } from '@/runtime/runtime-rpc-client'
+vi.mock('@/runtime/runtime-rpc-client', () => ({ callRuntimeRpc: vi.fn() }))
 
 const storeRef = vi.hoisted((): { current?: StoreApi<AppState> } => ({}))
 vi.mock('@/store', () => ({
@@ -27,7 +29,10 @@ vi.mock('./monaco-editor-input-bindings', () => ({
   installMonacoEditorInputBindings: () => ({ disposeInputBindings: vi.fn() })
 }))
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 function mountParams(
   store: StoreApi<AppState>,
@@ -88,78 +93,7 @@ function mountParams(
   }
 }
 
-it('retains the remote URL range before the gutter context menu collapses the selection', () => {
-  const store = createEditorTabsStore()
-  storeRef.current = store
-  const params = mountParams(store, 'selected-file', '/repo/file.ts')
-  let selection: IRange = {
-    startLineNumber: 10,
-    startColumn: 1,
-    endLineNumber: 21,
-    endColumn: 1
-  }
-  const mouseEvent = {
-    event: {
-      rightButton: true,
-      preventDefault: vi.fn(),
-      stopPropagation: vi.fn(),
-      posx: 5,
-      posy: 8
-    },
-    target: { type: 3, position: { lineNumber: 15 } }
-  }
-  let emitMouseDown: ((event: typeof mouseEvent) => void) | undefined
-  const mockEditor = {
-    getModel: () => null,
-    getPosition: () => ({ lineNumber: 10, column: 1 }),
-    getSelection: () => selection,
-    setPosition: ({ lineNumber, column }: { lineNumber: number; column: number }) => {
-      selection = {
-        startLineNumber: lineNumber,
-        startColumn: column,
-        endLineNumber: lineNumber,
-        endColumn: column
-      }
-    },
-    focus: vi.fn(),
-    onDidChangeCursorPosition: () => ({ dispose: vi.fn() }),
-    onDidScrollChange: () => ({ dispose: vi.fn() }),
-    onMouseDown: (listener: NonNullable<typeof emitMouseDown>) => {
-      emitMouseDown = listener
-      return { dispose: vi.fn() }
-    },
-    onDidDispose: vi.fn()
-  }
-  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Mount uses only the editor methods mocked above; decorations/input/probe integrations are mocked.
-  const editorInstance = mockEditor as unknown as editor.IStandaloneCodeEditor
-  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The gutter listener uses only this Monaco target enum; other Monaco integrations are mocked.
-  const monaco = {
-    editor: { MouseTargetType: { GUTTER_LINE_NUMBERS: 3 } }
-  } as Parameters<OnMount>[1]
-  const view = renderHook(() => {
-    const [menuSelection, setGutterMenuSelection] = useState<IRange | null>(null)
-    const [menuLine, setGutterMenuLine] = useState(1)
-    const onMount = useMonacoEditorMount({
-      ...params,
-      gutterMenu: { ...params.gutterMenu, setGutterMenuSelection, setGutterMenuLine }
-    })
-    return { onMount, remoteLineRange: getRemoteUrlLineRange(menuLine, menuSelection) }
-  })
-  view.result.current.onMount(editorInstance, monaco)
-
-  act(() => emitMouseDown?.(mouseEvent))
-
-  expect(mockEditor.getSelection()).toEqual({
-    startLineNumber: 15,
-    startColumn: 1,
-    endLineNumber: 15,
-    endColumn: 1
-  })
-  expect(view.result.current.remoteLineRange).toEqual({ line: 10, endLine: 20 })
-  params.unregisterFileSearchSelectionRef.current?.()
-})
-
-it('keeps a retained cursor listener on the current file ID after same-path owner migration', () => {
+it('keeps cursor and gutter copy on the current file owner after migration', async () => {
   const store = createEditorTabsStore()
   storeRef.current = store
   const filePath = '/repo/file.ts'
@@ -186,7 +120,13 @@ it('keeps a retained cursor listener on the current file ID after same-path owne
     | undefined
   let disposeEditor: (() => void) | undefined
   const cursorDispose = vi.fn()
+  let mouseDown: (event: unknown) => void = () => {}
+  let selection: IRange = { startLineNumber: 10, startColumn: 1, endLineNumber: 21, endColumn: 1 }
   const mockEditor = {
+    getSelection: () => selection,
+    setPosition: () => {
+      selection = { ...selection, startLineNumber: 15, endLineNumber: 15 }
+    },
     getModel: () => null,
     getPosition: () => ({ lineNumber: 1, column: 1 }),
     focus: vi.fn(),
@@ -195,15 +135,20 @@ it('keeps a retained cursor listener on the current file ID after same-path owne
       return { dispose: cursorDispose }
     },
     onDidScrollChange: () => ({ dispose: vi.fn() }),
-    onMouseDown: () => ({ dispose: vi.fn() }),
+    onMouseDown: (listener: typeof mouseDown) => {
+      mouseDown = listener
+      return { dispose: vi.fn() }
+    },
     onDidDispose: (listener: () => void) => {
       disposeEditor = listener
     }
   }
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Mount and tracking use only the editor methods mocked above; decorations/input/probe integrations are mocked.
   const editorInstance = mockEditor as unknown as editor.IStandaloneCodeEditor
-  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The mocked mount integrations do not access Monaco, and the mouse listener is not invoked.
-  const monaco = {} as Parameters<OnMount>[1]
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The mocked mount integrations use only this gutter enum.
+  const monaco = {
+    editor: { MouseTargetType: { GUTTER_LINE_NUMBERS: 3 } }
+  } as Parameters<OnMount>[1]
   const suspendedRender = vi.fn()
   const neverCommits = new Promise<void>(() => {})
   const view = renderHook(
@@ -253,6 +198,62 @@ it('keeps a retained cursor listener on the current file ID after same-path owne
   emitCursor?.({ position: { lineNumber: 42, column: 1 } })
 
   expect(store.getState().editorCursorLine).toEqual({ [result.fileId]: 42 })
+  vi.stubGlobal('api', { git: { remoteFileUrl: vi.fn() }, ui: { writeClipboardText: vi.fn() } })
+  const snapshot = { ...selection }
+  mouseDown({
+    event: Object.assign(new MouseEvent('mousedown'), { rightButton: true }),
+    target: { type: 3, position: { lineNumber: 15 } }
+  })
+  expect(params.gutterMenu.setGutterMenuSelection).toHaveBeenCalledWith(snapshot)
+  expect(selection).not.toEqual(snapshot)
+  const copiedUrl = 'https://github.com/org/repo/blob/main/file.ts#L10-L20'
+  const local = vi.spyOn(window.api.git, 'remoteFileUrl').mockResolvedValue(copiedUrl)
+  const clipboard = vi.spyOn(window.api.ui, 'writeClipboardText')
+  for (const runtimeEnvironmentId of [null, 'paired']) {
+    store.setState({ openFiles: [{ ...store.getState().openFiles[0], runtimeEnvironmentId }] })
+    const transport = runtimeEnvironmentId ? vi.mocked(callRuntimeRpc) : local
+    transport.mockResolvedValue(copiedUrl)
+    for (const line of [15, 21]) {
+      const menu = MonacoGutterContextMenu({
+        open: true,
+        onOpenChange: vi.fn(),
+        point: { x: 0, y: 0 },
+        line,
+        selection: snapshot,
+        filePath,
+        relativePath: 'file.ts'
+      })
+      const action = menu.props.children[1].props.children[2].props.onSelect
+      await action()
+      const expected = {
+        relativePath: 'file.ts',
+        line: line === 15 ? 10 : line,
+        endLine: line === 15 ? 20 : undefined
+      }
+      if (runtimeEnvironmentId) {
+        expect(callRuntimeRpc).toHaveBeenLastCalledWith(
+          { kind: 'environment', environmentId: 'paired' },
+          'git.remoteFileUrl',
+          { worktree: 'id:wt-1', ...expected },
+          { timeoutMs: 15_000 }
+        )
+      } else {
+        expect(local).toHaveBeenLastCalledWith({
+          worktreePath: '/repo',
+          connectionId: undefined,
+          ...expected
+        })
+      }
+      expect(clipboard).toHaveBeenLastCalledWith(copiedUrl)
+      clipboard.mockClear()
+      transport.mockResolvedValueOnce(null)
+      await action()
+      expect(clipboard).not.toHaveBeenCalled()
+      transport.mockRejectedValueOnce(new Error('owner unavailable'))
+      await expect(action()).rejects.toThrow('owner unavailable')
+      expect(clipboard).not.toHaveBeenCalled()
+    }
+  }
   disposeEditor?.()
   expect(cursorDispose).toHaveBeenCalledOnce()
   params.unregisterFileSearchSelectionRef.current?.()
@@ -283,7 +284,7 @@ it("a passive mirror never moves the borrowed tab's cursor line or takes its rev
   }
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Mount and tracking use only the editor methods mocked above; decorations/input/probe integrations are mocked.
   const editorInstance = mockEditor as unknown as editor.IStandaloneCodeEditor
-  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The mocked mount integrations do not access Monaco, and the mouse listener is not invoked.
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The mocked mount integrations use only this gutter enum.
   const monaco = {} as Parameters<OnMount>[1]
   const view = renderHook(() => useMonacoEditorMount(params))
 

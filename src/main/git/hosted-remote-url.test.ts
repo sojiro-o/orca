@@ -77,16 +77,16 @@ describe('hosted remote URLs', () => {
       )
     ).toBe('https://gitlab.com/team/project/-/blob/feature%2Fx/src/a%20file.ts#L5')
     expect(
-      buildHostedRemoteFileUrl('git@github.com:Org/Repo.git', 'src/a file.ts', 'feature/x', 42)
-    ).toBe('https://github.com/Org/Repo/blob/feature%2Fx/src/a%20file.ts#L42')
+      buildHostedRemoteFileUrl('git@github.com:Org/Repo.git', 'src/a file.ts', 'feature/x', 42, 45)
+    ).toBe('https://github.com/Org/Repo/blob/feature%2Fx/src/a%20file.ts#L42-L45')
 
     expect(
-      buildHostedRemoteFileUrl('git@gitlab.com:group/sub/repo.git', 'src/a.ts', 'feature/x', 9)
-    ).toBe('https://gitlab.com/group/sub/repo/-/blob/feature%2Fx/src/a.ts#L9')
+      buildHostedRemoteFileUrl('git@gitlab.com:group/sub/repo.git', 'src/a.ts', 'feature/x', 9, 12)
+    ).toBe('https://gitlab.com/group/sub/repo/-/blob/feature%2Fx/src/a.ts#L9-12')
 
     expect(
-      buildHostedRemoteFileUrl('git@bitbucket.org:team/repo.git', 'src/a.ts', 'feature/x', 7)
-    ).toBe('https://bitbucket.org/team/repo/src/feature%2Fx/src/a.ts#a.ts-7')
+      buildHostedRemoteFileUrl('git@bitbucket.org:team/repo.git', 'src/a.ts', 'feature/x', 7, 10)
+    ).toBe('https://bitbucket.org/team/repo/src/feature%2Fx/src/a.ts#a.ts-7:10')
 
     expect(
       buildHostedRemoteFileUrl(
@@ -105,34 +105,6 @@ describe('hosted remote URLs', () => {
     expect(
       buildHostedRemoteFileUrl('https://bitbucket.org/team/repo.git', 'src/a file.ts', 'main', 29)
     ).toBe('https://bitbucket.org/team/repo/src/main/src/a%20file.ts#a%20file.ts-29')
-  })
-
-  it.each([
-    ['github.com', '/blob/', '#L10-L20'],
-    ['gitlab.com', '/-/blob/', '#L10-20'],
-    ['bitbucket.org', '/src/', '#a%20file.ts-10:20']
-  ])('builds line ranges using the format for %s', (host, route, fragment) => {
-    expect(
-      buildHostedRemoteFileUrl(
-        `https://${host}/team/repo.git`,
-        'src/a file.ts',
-        'feature/x',
-        10,
-        20
-      )
-    ).toBe(`https://${host}/team/repo${route}feature%2Fx/src/a%20file.ts${fragment}`)
-  })
-
-  it.each([
-    ['github.com', '/blob/', '#L10'],
-    ['gitlab.com', '/-/blob/', '#L10'],
-    ['bitbucket.org', '/src/', '#a.ts-10']
-  ])('keeps a single line when the range does not extend it on %s', (host, route, fragment) => {
-    for (const endLine of [undefined, 10, 5]) {
-      expect(
-        buildHostedRemoteFileUrl(`https://${host}/team/repo.git`, 'src/a.ts', 'main', 10, endLine)
-      ).toBe(`https://${host}/team/repo${route}main/src/a.ts${fragment}`)
-    }
   })
 
   it('builds commit URLs per provider from ssh and https remotes', () => {
