@@ -115,9 +115,8 @@ export function useMobileStructuredAgentSession(
     [conversationCommands, invokeStructuredOption, optionSnapshot, setStructuredOption]
   )
 
-  const { groupedDraft, respondPermission, respondQuestion } = useMobileStructuredPromptResponses({
+  const { respondPermission, respondQuestion } = useMobileStructuredPromptResponses({
     stateRef,
-    sessionKey,
     mutate,
     questionAnswersSupported: hostSupport?.questionAnswers ?? null,
     onSendError
@@ -191,6 +190,7 @@ export function useMobileStructuredAgentSession(
     hold: sends.hold,
     commandPending: commandPendingRef,
     controller: sendController,
+    sessionCommands: args.sessionCommands,
     onSendError,
     sendOptions: hostSupport?.sendOptions === true ? options.sendSelection : undefined
   })
@@ -233,6 +233,7 @@ export function useMobileStructuredAgentSession(
     agentWorking: isWorking,
     client,
     sessionId,
+    reorderCapable: hostSupport?.queuedMessageReorder === true,
     editCapable: hostSupport ? hostSupport.queuedMessageEdit === true : null,
     chatActive: enabled,
     enabled: enabled && connected,
@@ -299,7 +300,7 @@ export function useMobileStructuredAgentSession(
     receipts: structuredQuestionTranscript(transcriptItems).receipts,
     actionablePromptIds: state.actionablePromptIds,
     permission: projectStructuredPermission(approvalPrompt),
-    question: projectStructuredQuestion(questionPrompt, groupedDraft),
+    question: projectStructuredQuestion(questionPrompt),
     respondPermission,
     respondQuestion,
     queued,

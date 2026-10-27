@@ -55,6 +55,10 @@ export function structuredHostStub(
     cancel: vi.fn(async () => ({ ok: true, replayed: false })),
     queuedMessageSend: vi.fn(async () => ({ ok: true, replayed: false })),
     queuedMessageDelete: vi.fn(async () => ({ ok: true, replayed: false })),
+    queuedMessageMove: vi.fn(async () => ({
+      ok: true,
+      value: { messageId: 'queued-1', status: 'moved' }
+    })),
     queuedMessagesResume: vi.fn(async () => ({ ok: true, replayed: false })),
     queuedMessageUpdate: vi.fn(async () => ({ ok: true, replayed: false })),
     queuedMessageEditHold: vi.fn(async () => ({
@@ -118,7 +122,7 @@ export function installableHost(
     // The catalog read checks the session's record for a floating chat's own folder; none here.
     deps: {
       modelCatalog: { read: hostCalls.modelCatalog },
-      store: { getRecord: () => null, getOperationRow: () => null }
+      store: { getRecord: () => null, getConversation: () => null, getOperationRow: () => null }
     },
     restartResume: {
       list: hostCalls.restartResumableList,

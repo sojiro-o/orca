@@ -15,7 +15,7 @@ import {
   publicKeyToBase64
 } from '../../e2ee-crypto'
 import { RemoteRuntimeRequestConnection } from './remote-runtime-request-connection'
-import { remoteRuntimeClientCapabilities } from '../../remote-runtime-client-capabilities'
+import { remoteRuntimeClientCapabilities } from '../remote-runtime-client-capabilities'
 import { ChildProcess } from 'node:child_process'
 import * as commandResolution from '../../../main/git/command-runner/git-command-resolution'
 import * as gitRunner from '../../../main/git/runner'

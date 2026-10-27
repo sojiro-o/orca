@@ -112,6 +112,11 @@ const skillFreshnessResources = {
   from: 'resources/skills',
   to: 'skills'
 }
+// The bundled agent-browser binary finds its version-matched catalog via the nearest skills/ above it (Resources/).
+const agentBrowserSkillResources = [
+  { from: 'node_modules/agent-browser/skills/agent-browser', to: 'skills/agent-browser' },
+  { from: 'node_modules/agent-browser/skill-data', to: 'skill-data' }
+]
 // Native agents load plugins by path and cannot read inside app.asar.
 const nativeChatVisualsResource = {
   from: 'resources/native-chat-visuals',
@@ -140,6 +145,7 @@ const commonExtraResources = [
   ...bundledRipgrepExtraResources,
   bundledPluginResources,
   skillFreshnessResources,
+  ...agentBrowserSkillResources,
   nativeChatVisualsResource,
   emojiShortcodeDatasetResource
 ]
@@ -167,7 +173,10 @@ const debElectronRuntimeDependencies = [
   'xdg-utils',
   'libatspi2.0-0',
   'libuuid1',
-  'libsecret-1-0'
+  'libsecret-1-0',
+  // Electron links these but electron-builder's defaults omit them; t64 is Ubuntu 24.04+/Debian 13.
+  'libasound2t64 | libasound2',
+  'libgbm1'
 ]
 const rpmElectronRuntimeDependencies = [
   'gtk3',
@@ -177,7 +186,8 @@ const rpmElectronRuntimeDependencies = [
   '(libXtst or libXtst6)',
   'xdg-utils',
   'at-spi2-core',
-  '(libuuid or libuuid1)'
+  '(libuuid or libuuid1)',
+  'alsa-lib'
 ]
 
 // Mirror OS document extensions: CJS packager cannot import TS; keep startup/os-opened-documents.ts and NSIS hooks aligned.
@@ -444,19 +454,28 @@ module.exports = {
     assertPackagedWebClient(resourcesDir)
     assertPackagedServeSelectionEntry(resourcesDir)
     finalizePackagedRipgrep(resourcesDir)
-    await finalizePackagedOrcadTemplate(resourcesDir, {
-      platform: context.electronPlatformName,
-      signMacBinary: (path) =>
-        signMacStandaloneHelper(path, 'orcad template binary', context.packager)
-    })
-    chmodUnixCliLaunchers(resourcesDir, context.electronPlatformName)
     for (const filename of readdirSync(resourcesDir)) {
       if (!filename.startsWith('agent-browser-')) {
         continue
       }
       // Upstream executable bits vary (notably darwin-x64); restore them so packaged execFile works.
       chmodSync(join(resourcesDir, filename), 0o755)
+      // The orcad template hashes this exact file next, so app signing must not rewrite it later.
+      if (context.electronPlatformName === 'darwin') {
+        await signMacStandaloneHelper(
+          join(resourcesDir, filename),
+          filename,
+          context.packager,
+          resolve(__dirname, '../resources/build/entitlements.mac.plist')
+        )
+      }
     }
+    await finalizePackagedOrcadTemplate(resourcesDir, {
+      platform: context.electronPlatformName,
+      signMacBinary: (path) =>
+        signMacStandaloneHelper(path, 'orcad template binary', context.packager)
+    })
+    chmodUnixCliLaunchers(resourcesDir, context.electronPlatformName)
     if (context.electronPlatformName === 'darwin') {
       await signMacComputerUseHelper(join(resourcesDir, 'Orca Computer Use.app'), context.packager)
       await signMacStandaloneHelper(
@@ -467,6 +486,11 @@ module.exports = {
       await signMacStandaloneHelper(
         join(resourcesDir, '..', 'MacOS', 'orca-keyboard-layout'),
         'orca-keyboard-layout',
+        context.packager
+      )
+      await signMacStandaloneHelper(
+        join(resourcesDir, '..', 'MacOS', 'orca-process-footprint'),
+        'orca-process-footprint',
         context.packager
       )
       await packageMacTerminalHost(join(resourcesDir, '..', '..'), context)
@@ -549,6 +573,8 @@ module.exports = {
     signIgnore: [
       ...bundledRipgrepMacSignIgnore,
       ...orcadTemplateMacSignIgnore,
+      // afterPack signs it before the orcad template hashes it.
+      '/Contents/Resources/agent-browser-darwin-[^/]+$',
       ...macTerminalHostSignIgnore
     ],
     extendInfo: macUsageDescriptions,
@@ -583,6 +609,10 @@ module.exports = {
       {
         from: 'native/keyboard-layout-macos/.build/release/orca-keyboard-layout',
         to: 'MacOS/orca-keyboard-layout'
+      },
+      {
+        from: 'native/process-footprint-macos/.build/release/orca-process-footprint',
+        to: 'MacOS/orca-process-footprint'
       }
     ],
     target: [

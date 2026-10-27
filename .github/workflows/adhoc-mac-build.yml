@@ -250,11 +250,19 @@ jobs:
           echo "tag=$TAG" >>"$GITHUB_OUTPUT"
 
   build-adhoc-mac-arch:
-    needs: [resolve-ref, orcad-template-support, release-javascript, prepare-adhoc-mac-release]
-    # Template qualification gates packaging after desktop preparation.
+    needs:
+      [
+        resolve-ref,
+        orcad-template-support,
+        orcad-template,
+        release-javascript,
+        prepare-adhoc-mac-release
+      ]
+    # Start after template qualification: overlapping ~2.5 min of preparation left both 12-vCPU Macs idle ~7 min.
     if: >-
       !cancelled() && github.repository == 'stablyai/orca' &&
       needs.orcad-template-support.result == 'success' &&
+      (needs.orcad-template.result == 'success' || needs.orcad-template-support.outputs.ships != 'true') &&
       needs.release-javascript.result == 'success' &&
       needs.prepare-adhoc-mac-release.result == 'success'
     # Signing environment must restrict deployments to main after MAC_CERTS/password, APPLE_ID/app password/team and hourly App secrets move there; referencing it alone enforces nothing.
@@ -267,8 +275,8 @@ jobs:
       matrix:
         arch: [x64, arm64]
     runs-on: blacksmith-12vcpu-macos-15
-    # Allow 360min: 180 for a cold patched-runtime build + 150 for install/publish retries and setup.
-    timeout-minutes: 360
+    # Allow 150min for install 3×10 + publish 2×45 + ~25 setup/build/verify; outer timeout would prevent cleanup.
+    timeout-minutes: 150
     env:
       JOBS: max
       NODE_OPTIONS: --max-old-space-size=4096
@@ -308,7 +316,7 @@ jobs:
             pnpm-lock.yaml
             mobile/pnpm-lock.yaml
 
-      # Cache the patched host Node by exact pin and patch, without restore keys.
+      # Cache bundled host Node by exact pin, without restore keys, so bumps cannot restore old archives.
       - name: Locate the pinned Node runtime cache
         shell: bash
         run: echo "ORCA_NODE_RUNTIME_CACHE_DIR=$HOME/Library/Caches/orca-node-runtime" >>"$GITHUB_ENV"
@@ -317,7 +325,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/Library/Caches/orca-node-runtime
-          key: orca-node-runtime-mac-${{ hashFiles('src/shared/node-runtime-pin.ts', 'config/node-runtime-patches/**', 'config/scripts/build-darwin-terminal-node.mjs', 'config/scripts/pinned-node-downloads.mjs', 'config/scripts/update-node-runtime-pin.mjs', 'config/scripts/macos-terminal-host-bundle.cjs') }}
+          key: orca-node-runtime-mac-${{ hashFiles('src/shared/node-runtime-pin.ts') }}
 
       - name: Cache electron-builder downloads
         uses: actions/cache@v5
@@ -337,15 +345,6 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: pnpm install --frozen-lockfile --cpu=current,x64,arm64
-
-      # Why: older refs predate the source build and package the pinned download instead.
-      - name: Build and verify the patched terminal runtimes
-        if: hashFiles('config/scripts/build-darwin-terminal-node.mjs') != ''
-        timeout-minutes: 180
-        run: |
-          pnpm run build:packages
-          ORCA_BACKGROUND_LAUNCH=1 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON config/scripts/verify-darwin-terminal-node.mjs --arch=arm64
-          ORCA_BACKGROUND_LAUNCH=1 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON config/scripts/verify-darwin-terminal-node.mjs --arch=x64
 
       # Build required out/mobile-web after installing its React Native/Expo dependencies.
       - uses: ./.github/actions/install-mobile-dependencies
@@ -383,30 +382,6 @@ jobs:
           # Leave build identity unset: telemetry accepts only official stable/rc, so branch artifacts stay silent.
           ORCA_DIAGNOSTICS_TOKEN_URL: https://www.onorca.dev/diagnostics/token
 
-      - name: Wait for the qualified orcad template
-        if: needs.orcad-template-support.outputs.ships == 'true'
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const deadline = Date.now() + 30 * 60_000
-            while (Date.now() < deadline) {
-              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
-                ...context.repo, run_id: context.runId, filter: 'latest', per_page: 100
-              })
-              const lanes = jobs.filter(job => job.name.startsWith('orcad-template / '))
-              const failed = lanes.find(job => job.status === 'completed' &&
-                ['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure'].includes(job.conclusion))
-              if (failed) throw new Error(`Template qualification failed: ${failed.name}`)
-              const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
-                ...context.repo, run_id: context.runId, per_page: 100
-              })
-              const ready = artifacts.some(artifact => artifact.name === 'orcad-template' && !artifact.expired)
-              const completed = lanes.length > 0 && lanes.every(job => job.status === 'completed')
-              if (ready && (process.env.WAIT_FOR_TEMPLATE_COMPLETION !== '1' || completed)) return
-              await new Promise(resolve => setTimeout(resolve, 15_000))
-            }
-            throw new Error('Timed out waiting for the qualified orcad template')
-
       # After the app build so nothing that cleans out/ can drop it; electron-builder ships it.
       - name: Download the orcad deployment template
         if: needs.orcad-template-support.outputs.ships == 'true'
@@ -432,7 +407,7 @@ jobs:
           timeout_minutes: 45
           max_attempts: 2
           retry_wait_seconds: 30
-          command: if [ ! -f config/scripts/build-darwin-terminal-node.mjs ]; then node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON config/scripts/pinned-node-downloads.mjs darwin-arm64 darwin-x64; fi && node config/scripts/ensure-native-runtime.mjs --runtime=electron && ORCA_MAC_ADHOC=1 pnpm exec electron-builder --config config/electron-builder.config.cjs --mac dmg zip --${{ matrix.arch }} --publish never
+          command: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON config/scripts/pinned-node-downloads.mjs darwin-arm64 darwin-x64 && node config/scripts/ensure-native-runtime.mjs --runtime=electron && ORCA_MAC_ADHOC=1 pnpm exec electron-builder --config config/electron-builder.config.cjs --mac dmg zip --${{ matrix.arch }} --publish never
         env:
           ORCA_ADHOC_BUILD_VERSION: ${{ needs.orcad-template-support.outputs.version }}
           ORCA_BUILD_COMMIT: ${{ needs.orcad-template-support.outputs.commit }}
@@ -665,12 +640,12 @@ jobs:
       fast_release: true
       javascript_source_sha: ${{ needs.release-javascript.outputs.supported == 'true' && needs.release-javascript.outputs.source_sha || '' }}
 
-  # Wait outside the publisher runner so cold runtime builds cannot exhaust its timeout.
+  # Prefetch the installer during notarization; the publisher still waits for Mac success.
   publish-adhoc-win:
-    needs: [orcad-template-support, build-adhoc-win, build-adhoc-mac]
+    needs: [orcad-template-support, build-adhoc-win]
     if: >-
       !cancelled() && needs.orcad-template-support.result == 'success' &&
-      needs.build-adhoc-win.result == 'success' && needs.build-adhoc-mac.result == 'success'
+      needs.build-adhoc-win.result == 'success'
     permissions:
       contents: read
       actions: read
@@ -679,3 +654,4 @@ jobs:
     with:
       channel: adhoc
       tag: v${{ needs.orcad-template-support.outputs.version }}
+      wait_for_mac_job: build-adhoc-mac

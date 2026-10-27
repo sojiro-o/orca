@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
+import { normalizePath, transformWithOxc, type Plugin } from 'vite'
 import { configDefaults, defaultExclude, defineConfig } from 'vitest/config'
 import { UNIT_INCLUDE, UNIT_EXCLUDE, UNIT_SETUP_FILES } from './scripts/ci-unit-files.mjs'
 import TimingSequencer from './scripts/ci-unit-sequencer.mjs'
@@ -18,16 +18,43 @@ const measurementFile = 'src/main/foreign-sqlite-readers/foreign-sqlite-reader-e
 const paletteMeasurementFile =
   'src/renderer/src/lib/palette-match/palette-match-performance.test.ts'
 const measurementFiles = [measurementFile, paletteMeasurementFile]
+const phoneContractModules = [
+  'mobile/src/session/native-chat/mobile-native-chat-stream-frame.ts',
+  'mobile/src/session/mobile-native-chat-render-data.ts'
+].map((file) => normalizePath(resolve(file)))
+const phoneContractPattern = new RegExp(
+  `^(?:${phoneContractModules.map((file) => file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?:\\?.*)?$`
+)
 const transforms = {
+  oxc: { exclude: [/\.js$/, phoneContractPattern] },
   plugins: [
     {
+      // These plain TS consumers need no Expo app configuration in root-only installs.
+      name: 'phone-contract-oxc',
+      enforce: 'pre',
+      async transform(source, id) {
+        const filename = normalizePath(id.split('?')[0])
+        if (!phoneContractModules.includes(filename)) {
+          return null
+        }
+        const result = await transformWithOxc(source, filename, { tsconfig: false })
+        for (const warning of result.warnings) {
+          this.warn(warning)
+        }
+        return { code: result.code, map: result.map }
+      }
+    } satisfies Plugin,
+    {
       // Unit tests have no asset server; retain real catalog parsing through fetch(data:).
+      // Read in the worker: inlining six ~1.5 MB catalogs shipped and parsed 11 MB per importing file.
       name: 'locale-catalog-test-assets',
       enforce: 'pre' as const,
       load(id: string) {
         if (/\/i18n\/locales\/[a-z]+\.json\?url$/.test(id)) {
-          const catalog = readFileSync(id.slice(0, -4)).toString('base64')
-          return `export default ${JSON.stringify(`data:application/json;base64,${catalog}`)}`
+          return [
+            "import { readFileSync } from 'node:fs'",
+            `export default 'data:application/json;base64,' + readFileSync(${JSON.stringify(id.slice(0, -4))}).toString('base64')`
+          ].join('\n')
         }
         return null
       }
