@@ -19,12 +19,17 @@ function matchRefPattern(pattern: string, ref: string): string | null {
     : null
 }
 
-export function sourceRefsForTarget(refspecs: readonly string[], target: string): string[] {
+export function sourceRefsForTarget(
+  refspecs: readonly string[],
+  target: string,
+  checkpoint?: () => void
+): string[] {
   if (target.includes('*')) {
     return []
   }
   const sources = new Set<string>()
   for (const refspec of refspecs) {
+    checkpoint?.()
     const parts = refspec.replace(/^\+/, '').split(':')
     const [source, destination] = parts
     if (
@@ -46,9 +51,10 @@ export function sourceRefsForTarget(refspecs: readonly string[], target: string)
   // Explicit refspecs bypass negative fetch mappings, so preserve their exclusions here.
   return [...sources].filter(
     (source) =>
-      !refspecs.some(
-        (refspec) => refspec.startsWith('^') && matchRefPattern(refspec.slice(1), source) !== null
-      )
+      !refspecs.some((refspec) => {
+        checkpoint?.()
+        return refspec.startsWith('^') && matchRefPattern(refspec.slice(1), source) !== null
+      })
   )
 }
 

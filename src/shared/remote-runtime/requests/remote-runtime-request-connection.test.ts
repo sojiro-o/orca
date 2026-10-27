@@ -16,7 +16,27 @@ import {
 } from '../../e2ee-crypto'
 import { RemoteRuntimeRequestConnection } from './remote-runtime-request-connection'
 import { remoteRuntimeClientCapabilities } from '../../remote-runtime-client-capabilities'
+import { ChildProcess } from 'node:child_process'
 import * as gitRunner from '../../../main/git/runner'
+import {
+  acquireGitAdmission,
+  GitAdmissionScheduler,
+  _gitAdmissionSnapshotForTests,
+  _resetGitAdmissionForTests
+} from '../../../main/git/command-runner/git-subprocess-admission'
+
+const { execFileMock, preflight } = vi.hoisted(() => ({
+  execFileMock: vi.fn(),
+  preflight: vi.fn().mockReturnValue(null)
+}))
+vi.mock('node:child_process', async (original) => ({
+  ...(await original()),
+  execFile: execFileMock
+}))
+vi.mock('../../../main/git/command-runner/git-command-resolution', async (original) => ({
+  ...(await original()),
+  pendingWslDirectGitReadEnvironment: preflight
+}))
 import { getRemoteFileUrl } from '../../../main/git/repo'
 
 type TestServer = {
@@ -75,43 +95,83 @@ describe('RemoteRuntimeRequestConnection', () => {
     connection.close()
   })
 
-  it('returns the prepared URL over RPC before 15s when optional Git admission spends the 5s budget', async () => {
-    const metadata = [
-      'origin\thttps://github.com/org/repo.git (fetch)',
-      'remote.origin.fetch\n+refs/heads/*:refs/remotes/origin/*\0',
-      'a'.repeat(40),
-      'refs/heads/local',
-      'refs/heads/local\0\0origin\0refs/heads/review/topic\0refs/remotes/origin/topic\nrefs/remotes/origin/topic\0\0\0\0'
-    ]
-    const routing = { wslDistro: 'Ubuntu', admissionTier: 'interactive' } as const
-    const exec = vi
-      .spyOn(gitRunner, 'gitExecFileAsync')
-      .mockImplementation(async (_args, options) => {
+  it.each(['admission', 'preflight'] as const)(
+    'cancels optional production Git %s before the encrypted 15s deadline without a late spawn',
+    async (wait) => {
+      _resetGitAdmissionForTests(new GitAdmissionScheduler({ generalCap: 1, generalHeadroom: 0 }))
+      const exec = vi.spyOn(gitRunner, 'gitExecFileAsync')
+      const metadata = [
+        'origin\thttps://github.com/org/repo.git (fetch)',
+        'remote.origin.fetch\n+refs/heads/*:refs/remotes/origin/*\0',
+        'a'.repeat(40),
+        'refs/heads/local',
+        'refs/heads/local\0\0origin\0refs/heads/review/topic\0refs/remotes/origin/topic',
+        'refs/remotes/origin/topic\0\0\0\0'
+      ]
+      const routing = { wslDistro: 'Ubuntu', admissionTier: 'interactive' } as const
+      let holding: ReturnType<typeof acquireGitAdmission> | undefined
+      let releasePreflight: () => void = () => {}
+      const heldPreflight = new Promise<void>((resolve) => {
+        releasePreflight = resolve
+      })
+      preflight.mockReset().mockImplementation((args, options) => {
         expect(options).toMatchObject(routing)
-        expect(options?.timeout).toBeLessThanOrEqual(5_000)
-        if (metadata.length) {
-          return { stdout: metadata.shift() ?? '', stderr: '' }
+        expect(options.timeout).toBeGreaterThan(0)
+        expect(options.timeout).toBeLessThanOrEqual(5_000)
+        return wait === 'preflight' && args.some((arg: string) => arg.startsWith('--contains='))
+          ? heldPreflight
+          : null
+      })
+      execFileMock.mockImplementation((_command, _args, _options, callback) => {
+        const child = new ChildProcess()
+        queueMicrotask(() => {
+          const stdout = metadata.shift() ?? ''
+          if (!metadata.length && wait === 'admission') {
+            holding = acquireGitAdmission({ args: ['status'], cwd: '/copy-blocker' })
+          }
+          callback(null, stdout, '')
+          child.emit('close', 0, null)
+        })
+        return child
+      })
+      const server = await createServer(() => getRemoteFileUrl('/repo', 'a.ts', 10, 20, routing))
+      const connection = new RemoteRuntimeRequestConnection(server.pairing)
+      const start = Date.now()
+      try {
+        const response = connection.request('git.remoteFileUrl', {}, 15_000)
+        await vi.waitFor(() => expect(preflight).toHaveBeenCalledTimes(7))
+        const optional = preflight.mock.calls.at(-1)
+        expect(optional?.[0]).toContain(`--contains=${'a'.repeat(40)}`)
+        if (wait === 'admission') {
+          expect(_gitAdmissionSnapshotForTests().queuedWaiters).toMatchObject([
+            { args: optional?.[0] }
+          ])
         }
-        // Admission/preflight can wait without settling; the action deadline must still end the await.
-        return new Promise(() => {})
-      })
-    const server = await createServer(() => getRemoteFileUrl('/repo', 'a.ts', 10, 20, routing))
-    const connection = new RemoteRuntimeRequestConnection(server.pairing)
-    const start = Date.now()
-    try {
-      await expect(connection.request('git.remoteFileUrl', {}, 15_000)).resolves.toMatchObject({
-        ok: true,
-        result: 'https://github.com/org/repo/blob/review%2Ftopic/a.ts#L10-L20'
-      })
-      expect(Date.now() - start).toBeGreaterThanOrEqual(5_000)
-      expect(Date.now() - start).toBeLessThan(15_000)
-      expect(exec.mock.calls).toHaveLength(6)
-      expect(exec.mock.calls.at(-1)?.[1]?.signal?.aborted).toBe(true)
-    } finally {
-      connection.close()
-      exec.mockRestore()
+        await expect(response).resolves.toMatchObject({
+          ok: true,
+          result: 'https://github.com/org/repo/blob/review%2Ftopic/a.ts#L10-L20'
+        })
+        expect(Date.now() - start).toBeGreaterThanOrEqual(5_000)
+        expect(Date.now() - start).toBeLessThan(15_000)
+        expect(optional?.[1].signal.aborted).toBe(true)
+        expect(_gitAdmissionSnapshotForTests().queued).toBe(0)
+        ;(await holding)?.release()
+        releasePreflight()
+        await expect(exec.mock.results.at(-1)?.value).rejects.toMatchObject({ name: 'AbortError' })
+        expect(execFileMock).toHaveBeenCalledTimes(6)
+        expect(_gitAdmissionSnapshotForTests().queued).toBe(0)
+        expect(_gitAdmissionSnapshotForTests().budgets.general?.baseUsed).toBe(0)
+      } finally {
+        connection.close()
+        ;(await holding)?.release()
+        releasePreflight()
+        preflight.mockReset().mockReturnValue(null)
+        execFileMock.mockReset()
+        exec.mockRestore()
+        _resetGitAdmissionForTests()
+      }
     }
-  })
+  )
 
   it('aborts one request without closing the cached connection', async () => {
     const server = await createServer()

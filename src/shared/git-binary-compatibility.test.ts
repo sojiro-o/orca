@@ -143,6 +143,16 @@ describeBinaryCompatibility('real Git binary compatibility', () => {
       const forkFetchConfig = 'remote.team/fork.x.fetch'
       const publicationRef = 'refs/remotes/origin/published'
       await git('remote', 'add', 'team/fork.x', 'https://github.com/org/team-fork.git')
+      for (const [mapping, destination] of [
+        ['+refs/heads/review-*:refs/cache/published-*', 'refs/cache/published-feature'],
+        ['+refs/heads/*:refs/cache/*-pub', 'refs/cache/team/x-pub'],
+        ['+refs/heads/*:refs/c*end', 'refs/cache/team/feature-end']
+      ]) {
+        await git('config', forkFetchConfig, mapping)
+        await git('update-ref', destination, head)
+        await url(head, 'team-fork')
+        await git('update-ref', '-d', destination)
+      }
       await git('config', forkFetchConfig, '+refs/heads/review/*:refs/hosting-cache/*')
       await git('update-ref', 'refs/hosting-cache/topic', base)
       await git('config', 'branch.feature/local.remote', 'team/fork.x')
@@ -181,6 +191,9 @@ describeBinaryCompatibility('real Git binary compatibility', () => {
       await git('config', forkFetchConfig, '+refs/heads/review/*:refs/hosting-cache/*')
       await git('checkout', '-q', 'feature/local')
       await git('update-ref', '-d', 'refs/hosting-cache/topic')
+      await git('update-ref', 'refs/hosting-cache/topic/descendant', base)
+      await url(null) // Descendants prove neither upstream nor dangling default target exists.
+      await git('update-ref', '-d', 'refs/hosting-cache/topic/descendant')
       await url(null) // Gone upstream; unrelated refs cannot prove publication.
       await git('config', 'branch.feature/local.remote', '.')
       await git('config', 'branch.feature/local.merge', 'refs/heads/main')
@@ -203,15 +216,77 @@ describeBinaryCompatibility('real Git binary compatibility', () => {
           await git('remote', 'add', `r${i}`, `https://github.com/org/r${i}.git`)
           await git('update-ref', `refs/remotes/r${i}/main`, head)
         }
+        await git('symbolic-ref', 'refs/remotes/r0/HEAD', 'refs/remotes/r0/main')
         exec.mockClear()
         await url(head, 'r0')
         counts.push(exec.mock.calls.length)
       }
-      expect(counts).toEqual([6, 6])
+      expect(counts).toEqual([7, 7])
       await mkdir(join(root, 'linked'))
       await git('worktree', 'add', '--detach', join(cwd, 'linked'), head)
       exec.mockImplementation((args) => runGit(['-C', join(cwd, 'linked'), ...args]))
       await url(head, 'r0', join(root, 'linked'))
+    } finally {
+      exec.mockRestore()
+    }
+  })
+
+  it('keeps exact fallback with 4500 fetched refs and an overflowing optional publication result', async () => {
+    const root = join(repoPath, 'copy-url-large')
+    await mkdir(root)
+    const cwd = image ? '/repo/copy-url-large' : root
+    const git = (args: string[], stdin?: string) => runGit(['-C', cwd, ...args], undefined, stdin)
+    await git(['init', '-q'])
+    await git(['symbolic-ref', 'HEAD', 'refs/heads/main'])
+    const commit = [
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.invalid',
+      '-c',
+      'commit.gpgSign=false',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'fixture'
+    ]
+    await git(commit)
+    const base = (await git(['rev-parse', 'HEAD'])).stdout.trim()
+    await git(['remote', 'add', 'origin', 'https://github.com/org/origin.git'])
+    await git(['update-ref', 'refs/remotes/origin/main', base])
+    await git(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+    await git(['checkout', '-qb', 'local'])
+    await git(commit)
+    const head = (await git(['rev-parse', 'HEAD'])).stdout.trim()
+    let overflow = false
+    const exec = vi
+      .spyOn(gitRunner, 'gitExecFileAsync')
+      .mockImplementation(async (args, options) => {
+        const result = await git(args)
+        if (args[0] === 'for-each-ref' && !args.some((arg) => arg.startsWith('--contains='))) {
+          expect(args.slice(2).every((arg) => arg.endsWith(']'))).toBe(true)
+          expect(Buffer.byteLength(result.stdout)).toBeLessThan(1024)
+        }
+        if (Buffer.byteLength(result.stdout) > (options?.maxBuffer ?? Infinity)) {
+          overflow = true
+          throw new Error('stdout exceeded maxBuffer')
+        }
+        return result
+      })
+    try {
+      for (const tip of [base, head]) {
+        await git(
+          ['update-ref', '--stdin'],
+          Array.from(
+            { length: 4500 },
+            (_, i) => `update refs/remotes/origin/${'x'.repeat(220)}${i} ${tip}\n`
+          ).join('')
+        )
+        await expect(getRemoteFileUrl(root, 'a.ts', 10, 20)).resolves.toBe(
+          'https://github.com/org/origin/blob/main/a.ts#L10-L20'
+        )
+        expect(overflow).toBe(tip === head)
+      }
     } finally {
       exec.mockRestore()
     }
