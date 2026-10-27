@@ -345,17 +345,15 @@ describe('git RPC methods', () => {
         line: 3
       })
     )
-    const oldMethods = GIT_METHODS.map((method) =>
-      method.name === 'git.remoteFileUrl'
-        ? defineMethod({
-            name: method.name,
-            permission: method.permission,
-            params: GitRemoteFileUrl.omit({ endLine: true }),
-            handler: (params, { runtime }) =>
-              runtime.getRuntimeGitRemoteFileUrl(params.worktree, params.relativePath, params.line)
-          })
-        : method
-    )
+    const oldMethods = [
+      defineMethod({
+        name: 'git.remoteFileUrl',
+        permission: 'workspace',
+        params: GitRemoteFileUrl.omit({ endLine: true }),
+        handler: (params, { runtime }) =>
+          runtime.getRuntimeGitRemoteFileUrl(params.worktree, params.relativePath, params.line)
+      })
+    ]
     for (const methods of [GIT_METHODS, oldMethods]) {
       const owner = new RpcDispatcher({ runtime, methods })
       const params = { worktree: 'id:wt-1', relativePath: 'src/a.ts', line: 3, endLine: 8 }

@@ -67,8 +67,9 @@ describe('registerFilesystemHandlers', () => {
     invalidateAuthorizedRootsCache()
   })
 
-  it('routes local git:commit through commitChanges and returns success', async () => {
+  it('routes commit and URL actions to the registered owner with WSL/range and SSH refusal', async () => {
     commitChangesMock.mockResolvedValue({ success: true })
+    const url = vi.spyOn(gitRepo, 'getRemoteFileUrl').mockResolvedValue(null)
 
     registerFilesystemHandlers(store as never)
 
@@ -82,6 +83,21 @@ describe('registerFilesystemHandlers', () => {
     expect(commitChangesMock).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, 'feat: ship commit', {
       admissionTier: 'interactive'
     })
+    vi.spyOn(localOptions, 'getLocalGitOptionsForRegisteredWorktree').mockReturnValue({
+      wslDistro: 'Ubuntu'
+    })
+    const args = {
+      worktreePath: WORKTREE_FEATURE_PATH,
+      relativePath: 'a.ts',
+      line: 10,
+      endLine: 20
+    }
+    await expect(handlers.get('git:remoteFileUrl')!(null, args)).resolves.toBeNull()
+    expect(url).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, 'a.ts', 10, 20, { wslDistro: 'Ubuntu' })
+    await expect(
+      handlers.get('git:remoteFileUrl')!(null, { ...args, connectionId: 'conn-1' })
+    ).rejects.toThrow('Remote connection dropped')
+    expect(url).toHaveBeenCalledTimes(1)
   })
 
   it('refuses ssh git:commit as not served instead of running local commitChanges', async () => {
@@ -110,27 +126,6 @@ describe('registerFilesystemHandlers', () => {
         connectionId: 'conn-1'
       })
     ).rejects.toThrow('sha must be a full git object id')
-  })
-
-  it('keeps the registered local owner, WSL and range at the URL IPC boundary', async () => {
-    vi.spyOn(localOptions, 'getLocalGitOptionsForRegisteredWorktree').mockReturnValue({
-      wslDistro: 'Ubuntu'
-    })
-    const url = vi.spyOn(gitRepo, 'getRemoteFileUrl').mockResolvedValue(null)
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The existing harness supplies this registrar's store API.
-    registerFilesystemHandlers(store as never)
-    const args = {
-      worktreePath: WORKTREE_FEATURE_PATH,
-      relativePath: 'a.ts',
-      line: 10,
-      endLine: 20
-    }
-    await expect(handlers.get('git:remoteFileUrl')!(null, args)).resolves.toBeNull()
-    expect(url).toHaveBeenCalledWith(WORKTREE_FEATURE_PATH, 'a.ts', 10, 20, { wslDistro: 'Ubuntu' })
-    await expect(
-      handlers.get('git:remoteFileUrl')!(null, { ...args, connectionId: 'conn-1' })
-    ).rejects.toThrow('Remote connection dropped')
-    expect(url).toHaveBeenCalledTimes(1)
   })
 
   it('rejects git:commit with whitespace-only message and does not call commitChanges', async () => {

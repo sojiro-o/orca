@@ -230,20 +230,15 @@ it('keeps cursor and gutter copy on the current file owner after migration', asy
         line: line === 15 ? 10 : line,
         endLine: line === 15 ? 20 : undefined
       }
-      if (runtimeEnvironmentId) {
-        expect(callRuntimeRpc).toHaveBeenLastCalledWith(
-          { kind: 'environment', environmentId: 'paired' },
-          'git.remoteFileUrl',
-          { worktree: 'id:wt-1', ...expected },
-          { timeoutMs: 15_000 }
-        )
-      } else {
-        expect(local).toHaveBeenLastCalledWith({
-          worktreePath: '/repo',
-          connectionId: undefined,
-          ...expected
-        })
-      }
+      const owner = runtimeEnvironmentId
+        ? [
+            { kind: 'environment', environmentId: 'paired' },
+            'git.remoteFileUrl',
+            { worktree: 'id:wt-1', ...expected },
+            { timeoutMs: 15_000 }
+          ]
+        : [{ worktreePath: '/repo', connectionId: undefined, ...expected }]
+      expect(transport).toHaveBeenLastCalledWith(...owner)
       expect(clipboard).toHaveBeenLastCalledWith(copiedUrl)
       clipboard.mockClear()
       transport.mockResolvedValueOnce(null)
@@ -284,7 +279,7 @@ it("a passive mirror never moves the borrowed tab's cursor line or takes its rev
   }
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: Mount and tracking use only the editor methods mocked above; decorations/input/probe integrations are mocked.
   const editorInstance = mockEditor as unknown as editor.IStandaloneCodeEditor
-  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The mocked mount integrations use only this gutter enum.
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: The mocked mount integrations do not access Monaco, and the mouse listener is not invoked.
   const monaco = {} as Parameters<OnMount>[1]
   const view = renderHook(() => useMonacoEditorMount(params))
 
