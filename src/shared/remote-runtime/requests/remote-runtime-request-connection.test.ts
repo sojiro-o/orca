@@ -95,6 +95,7 @@ describe('RemoteRuntimeRequestConnection', () => {
     })
     const server = await createServer(() => getRemoteFileUrl('/repo', 'a.ts', 10, 20, routing))
     const connection = new RemoteRuntimeRequestConnection(server.pairing)
+    // ast-grep-ignore: test-no-wall-clock -- Measures the real encrypted RPC cancellation deadline.
     const start = Date.now()
     onTestFinished(async () => {
       connection.close()
@@ -116,7 +117,9 @@ describe('RemoteRuntimeRequestConnection', () => {
       ok: true,
       result: 'https://github.com/org/repo/blob/review%2Ftopic/a.ts#L10-L20'
     })
+    // ast-grep-ignore: test-no-wall-clock -- The production cancellation timer must actually elapse.
     expect(Date.now() - start).toBeGreaterThanOrEqual(5_000)
+    // ast-grep-ignore: test-no-wall-clock -- The fallback must arrive before the real RPC deadline.
     expect(Date.now() - start).toBeLessThan(15_000)
     expect(optional?.[1].signal.aborted).toBe(true)
     ;(await holding)?.release()
